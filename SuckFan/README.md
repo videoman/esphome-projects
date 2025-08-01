@@ -1,13 +1,13 @@
 # Suck Fan Controller
 
-![Picture of the suck fan box and display] (/SuckFan/Suck-Fan-1.jpeg)
+![Picture of the suck fan box and display](/SuckFan/Suck-Fan-1.jpeg)
 
 This uses the following hardware to turn on a three phase contactor. 
 
 # Controller
 ESP32 Board Relay Board: https://a.co/d/eZbQkHe
 
-![Picture of the ESP32 Relay Board] (/SuckFan/ESP32-Relay-Board.jpeg)
+![Picture of the ESP32 Relay Board](/SuckFan/ESP32-Relay-Board.jpeg)
 
 This board has 4 realys, and zero documentation. 
   relay_1: GPIO32
