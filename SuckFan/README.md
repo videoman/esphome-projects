@@ -4,7 +4,7 @@ Using [ESP Home](https://esphome.io) and [Home Assistant](https://www.home-assis
 
 The YAML file contains the code necesary for ESPHome to compile the code to run the interface.
 
-[Code lives here](/SuckFan/esp-suck-fan.yaml)
+ESP Home YAML File Config [lives here](/SuckFan/esp-suck-fan.yaml)
 
 <img src="/SuckFan/Suck-Fan-1.jpeg" alt="Picture of the control box." style="max-width: 50%; width: 500px;">
 
