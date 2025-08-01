@@ -3,6 +3,7 @@
 Using [ESP Home](https://esphome.io) and [Home Assistant](https://www.home-assistant.io) this allows local and remote control of the relay and contactor.
 
 ![Picture of the suck fan box and display](/SuckFan/Suck-Fan-1.jpeg){width=80}
+<img src="/SuckFan/Suck-Fan-1.jpeg" alt="Picture of the control box." style="max-width: 50%; width: 100px;">
 
 This uses the following hardware to turn on a three phase contactor. 
 
