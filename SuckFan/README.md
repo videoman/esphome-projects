@@ -1,13 +1,15 @@
 # Suck Fan Controller
 
-![Picture of the suck fan box and display](/SuckFan/Suck-Fan-1.jpeg)
+Using [ESP Home](https://esphome.io) and [Home Assistant](https://www.home-assistant.io) this allows local and remote control of the relay and contactor.
+
+![Picture of the suck fan box and display](/SuckFan/Suck-Fan-1.jpeg|width=100)
 
 This uses the following hardware to turn on a three phase contactor. 
 
 # Controller
 ESP32 Board Relay Board: https://a.co/d/eZbQkHe
 
-![Picture of the ESP32 Relay Board](/SuckFan/ESP32-Relay-Board.jpeg)
+![Picture of the ESP32 Relay Board](/SuckFan/ESP32-Relay-Board.jpeg|width=100)
 
 This board has 4 realys, and zero documentation. 
   relay_1: GPIO32
