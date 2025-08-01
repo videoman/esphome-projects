@@ -1,0 +1,303 @@
+esphome:
+  name: esp-4-relay-board
+  friendly_name: esp-4-relay-board
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+# This are used as variables for GPIO Pins later on.
+substitutions:
+  spi_clk: GPIO18
+  spi_mosi: GPIO23
+  spi_cs: GPIO5
+  spi_dc: GPIO16
+  spi_rst: GPIO4
+  backlight_pin: GPIO2
+  button_1: GPIO17
+  button_2: GPIO15
+  relay_1: GPIO32
+  relay_2: GPIO33
+  relay_3: GPIO25
+  relay_4: GPIO26
+
+  # For the Board I used, these are the GPIO Pins
+  # RELAY 1 = PIN 32
+  # RELAY 2 = PIN 33
+  # RELAY 3 = Pin 25
+  # RELAY 4 = Pin 26
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: "your key here"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Esp-4-Relay-Board"
+    password: "YourPASSWORDHere"
+
+captive_portal:
+
+
+# Various ways to configure fonts
+font:
+  - file: "fonts/white-rabbit.ttf"
+    id: my_font2
+    size: 30
+    bpp: 1
+
+  - file: "fonts/video-terminal-screen.ttf"
+    id: my_font3
+    size: 40
+    bpp: 2
+
+  - file: "fonts/Arial.ttf"
+    id: my_font
+    size: 20
+
+  - file: "fonts/Arial.ttf"
+    id: large_font
+    size: 40
+
+color:
+  - id: my_red
+    red: 100%
+    green: 0%
+    blue: 0%
+  - id: my_yellow
+    red: 100%
+    green: 100%
+    blue: 0%
+  - id: my_green
+    red: 0%
+    green: 100%
+    blue: 0%
+  - id: my_blue
+    red: 0%
+    green: 0%
+    blue: 100%
+  - id: my_gray
+    red: 50%
+    green: 50%
+    blue: 50%
+
+# Define a PWM output on the ESP32
+output:
+  - platform: ledc
+    pin: ${backlight_pin}
+    id: backlight_pwm
+
+# Define a monochromatic, dimmable light for the backlight
+light:
+  - platform: monochromatic
+    output: backlight_pwm
+    name: "Display Backlight"
+    id: back_light
+    restore_mode: ALWAYS_ON
+
+# Button input on from pin (Start/Cancel)
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: ${button_1}
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    name: "Start Button"
+    id: start_button
+    filters:
+      - delayed_on: 50ms  # Debounce
+    on_press:
+      then:
+        - if:
+            condition:
+              # Check if relay is already on (cancel mode)
+              switch.is_on: my_relay_1
+            then:
+              # Start long press timer for cancel
+              - delay: 3s
+              - if:
+                  condition:
+                    # Check if button is still pressed after 3 seconds
+                    binary_sensor.is_on: start_button
+                  then:
+                    # Cancel countdown and turn off relay
+                    - switch.turn_off: my_relay_1
+                    - lambda: |-
+                        id(countdown_active) = false;
+                        id(countdown_value) = 0;
+            else:
+              # Start countdown and turn on relay with selected delay
+              - switch.turn_on: my_relay_1
+              - lambda: |-
+                  // Reset and start countdown with selected delay time
+                  id(countdown_active) = true;
+                  id(countdown_value) = id(delay_times)[id(selected_delay_index)];
+
+  # Time selection button on
+  - platform: gpio
+    pin:
+      number: ${button_2}
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    name: "Time Select Button"
+    id: time_select_button
+    filters:
+      - delayed_on: 30ms  # Debounce
+    on_press:
+      then:
+        - if:
+            condition:
+              # Only allow time selection when relay is off
+              switch.is_off: my_relay_1
+            then:
+              - lambda: |-
+                  // Cycle through delay times: 0=24hr, 1=12hr, 2=8hr, 3=4hr, 4=60min
+                  id(selected_delay_index) = (id(selected_delay_index) + 1) % 5;
+
+
+# RELAY 1 = PIN 32
+# RELAY 2 = PIN 33
+# RELAY 3 = Pin 25
+# RELAY 4 = Pin 26
+
+# Relay on GPIO
+switch:
+  - platform: gpio
+    pin: ${relay_1}
+    name: "Suck FAN"
+    id: my_relay_1
+    # inverted: true
+    restore_mode: ALWAYS_OFF
+    on_turn_off:
+      then:
+        - lambda: |-
+            // Stop countdown when relay is manually turned off
+            id(countdown_active) = false;
+            id(countdown_value) = 0;
+
+# Global variables for countdown and delay selection
+globals:
+  - id: countdown_active
+    type: bool
+    initial_value: 'false'
+  - id: countdown_value
+    type: int
+    initial_value: '0'
+  - id: selected_delay_index
+    type: int
+    initial_value: '0'  # 0=60min, 1=4hr, 2=8hr
+  - id: delay_times
+    type: int[5]
+    initial_value: '{86400, 43200, 28800, 14400, 3600}'  # 24hr, 12hr, 8hr, 4hr, 60min in seconds
+
+# Countdown timer logic
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (id(countdown_active) && id(countdown_value) > 0) {
+            id(countdown_value)--;
+            if (id(countdown_value) <= 0) {
+              // Turn off relay when countdown reaches zero
+              id(my_relay_1).turn_off();
+              id(countdown_active) = false;
+            }
+          }
+
+# Template sensor to expose countdown value
+sensor:
+  - platform: template
+    name: "Countdown Timer"
+    id: countdown_timer
+    unit_of_measurement: "s"
+    update_interval: 1s
+    lambda: |-
+      return id(countdown_value);
+
+    # Example configuration entry - single controller
+spi:
+  clk_pin: ${spi_clk}
+  mosi_pin: ${spi_mosi}
+  #miso_pin: GPIO11
+
+# Example minimal configuration entry - Display is ST7796S
+display:
+  - platform: ili9xxx
+    model: ST7789V
+    # model: CUSTOM
+    dimensions:
+      height: 170
+      width: 320
+      offset_height: 35
+      offset_width: 0
+    color_order: bgr
+    invert_colors: True
+    # data_rate: 80MHz
+    cs_pin: ${spi_cs}
+    dc_pin: ${spi_dc}
+    reset_pin: ${spi_rst}
+    color_palette: 8BIT
+    update_interval: 1s
+    #rotation: 90
+    transform:
+      swap_xy: True
+      mirror_x: True
+      mirror_y: false
+
+    lambda: |-
+      # // Display relay state
+      if (id(my_relay_1).state) {
+        it.print(2, 5, id(large_font), "Suck FAN:");
+        it.print(it.get_width(), 0, id(large_font), id(my_red), TextAlign::TOP_RIGHT, " ON");
+      } else {
+        it.print(2, 5, id(large_font), "Suck FAN:");
+        it.print(it.get_width(), 0, id(large_font), id(my_green), TextAlign::TOP_RIGHT, " OFF");
+      }
+
+      // Display selected delay time when relay is off
+      if (!id(my_relay_1).state) {
+        const char* delay_names[] = {"24 hours", "12 hours", "8 hours", "4 hours", "60 min"};
+        it.printf(2, 45, id(large_font), "Timer: %s", delay_names[id(selected_delay_index)]);
+      }
+
+      // Display countdown timer
+      if (id(countdown_active) && id(countdown_value) > 0) {
+        int hours = id(countdown_value) / 3600;
+        int minutes = (id(countdown_value) % 3600) / 60;
+        int seconds = id(countdown_value) % 60;
+
+        if (hours > 0) {
+          it.printf(2, 80, id(large_font), "%02d:%02d:%02d", hours, minutes, seconds);
+          it.print(2, 125, id(my_font), "Hold start/stop 3s to cancel");
+        } else {
+          it.printf(2, 80, id(large_font), "%02d:%02d", minutes, seconds);
+          it.print(2, 125, id(my_font), "Hold start/stop 3s to cancel");
+        }
+
+        // Show cancel instruction
+        if (id(start_button).state) {
+          it.print(2, 125, id(my_font), "Hold start/stop 3s to cancel");
+        }
+      } else if (id(my_relay_1).state) {
+        it.print(2, 95, id(my_font), "Timer: Ready");
+      } else {
+        it.print(2, 95, id(my_font), "Press START to begin");
+        it.print(2, 115, id(my_font), "Press Time SELECT to change");
+      }
