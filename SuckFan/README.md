@@ -1,11 +1,11 @@
 # Suck Fan Controller
 
 I have a shop with a paint booth. The old way to control the fan was a 3phase knife switch. 3Phase fan timers with a contactor seem to be hundreds of dollars. I wanted to be 
-able to also use home assistant to contoal the fan remotely or with timers/actions/automations from home assistant. 
+able to also use home assistant to control the fan remotely or with timers/actions/automations from home assistant. 
 
-This is seutp Using [ESP Home](https://esphome.io) and [Home Assistant](https://www.home-assistant.io) this allows local and remote control of the relay and 3PH contactor.
+This is seutp using [ESP Home](https://esphome.io) and [Home Assistant](https://www.home-assistant.io) which allows for both local and remote control of the relay and 3PH contactor.
 
-The YAML file contains the code necesary for ESPHome to compile the code to run the interface.
+The YAML file contains the code necesary for ESPHome to compile the code to run the ESP32 device, along with the LCD interface.
 
 ESP Home YAML File Config [lives here](/SuckFan/esp-suck-fan.yaml)
 
