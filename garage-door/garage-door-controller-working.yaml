@@ -181,7 +181,7 @@ cover:
       } else if (id(door_closed_sensor).state) {
         return COVER_CLOSED;
       } else {
-        return {};
+        return COVER_OPENING;
       }
     
     # Optimistic mode disabled since we have position feedback
