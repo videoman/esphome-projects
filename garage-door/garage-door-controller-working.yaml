@@ -5,7 +5,8 @@ substitutions:
   door_open_sensor_pin: "GPIO4"
   door_closed_sensor_pin: "GPIO5"
   status_led_pin: "GPIO23"
-  auto_close_timer_minutes: "1"
+  auto_close_timer_minutes: "10"
+  auto_close_enabled_value: "true"
 
 esphome:
   name: garagedoorcontroller
@@ -30,11 +31,11 @@ logger:
 # Enable Home Assistant API
 api:
   encryption:
-    key: "Cf3EmdudHs3h5j8vaJgNBpMPAud7mTdroWUlntZmh6k="
+    key: !secret api_key1
 
 ota:
   - platform: esphome
-    password: "6d351604b5fd33550beee807e096f724"
+    password: !secret ota_pass1
 
 wifi:
   networks:
@@ -45,25 +46,41 @@ wifi:
 
   # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
-    ssid: "Garagedoorcontroller"
-    password: "mLo5Yica0zgq"
+    ssid: !secret wifi_local_ssid
+    password: !secret wifi_local_password
 
 captive_portal:
 
 web_server:
   port: 80
 
-
 # Auto-close timer
 globals:
   - id: auto_close_enabled
     type: bool
     restore_value: true
-    initial_value: 'true'
+    initial_value: $auto_close_enabled_value
   - id: countdown_seconds
     type: int
     restore_value: false
     initial_value: '0'
+
+#  - id: auto_close_timer_minutes
+#    type: int
+#    initial_value: $auto_close_timer_minutes
+
+#numbers: 
+#  - platform: template
+#  name: "Timer Slider"
+#  optimistic: true
+#  id: "timeSlider"
+#    step: 1
+#    min_value: 2
+#    max_value: 30
+#    mode: slider
+#    set_action:
+#      then:
+#        - lambda: return id(auto_close_timer_minutes)
 
 # Binary sensor additions for auto-close monitoring
 binary_sensor:
@@ -81,7 +98,14 @@ binary_sensor:
     on_release:
       # Door closed - stop auto-close timer
       - script.execute: stop_auto_close_timer
+      - cover.template.publish:
+          id: garage_door_cover
+          current_operation: CLOSING
     on_press:
+      - cover.template.publish:
+          id: garage_door_cover
+          state: OPEN
+          current_operation: IDLE
       # Door opened - start auto-close timer if enabled
       - if:
           condition:
@@ -100,6 +124,15 @@ binary_sensor:
     name: "Garage Door Closed Sensor"
     id: door_closed_sensor
     device_class: garage_door
+    on_press:
+      - cover.template.publish:
+          id: garage_door_cover
+          state: CLOSED
+          current_operation: IDLE
+    on_release:
+      - cover.template.publish:
+          id: garage_door_cover
+          current_operation: OPENING
 
 switch:
   # Main garage door relay (momentary)
@@ -118,6 +151,9 @@ switch:
     name: "Garage Door Buzzer"
     id: garage_door_buzzer
     icon: "mdi:bell-ring"
+    on_turn_on:
+      - delay: 500ms
+      - switch.turn_off: garage_door_buzzer
 
   # Auto-close enable/disable switch
   - platform: template
@@ -138,8 +174,10 @@ switch:
     turn_off_action:
       - globals.set:
           id: auto_close_enabled
-          value: 'false'
+          value: $auto_close_enabled_value
       - script.execute: stop_auto_close_timer
+
+ 
 
 # Template cover for garage door
 cover:
@@ -147,7 +185,11 @@ cover:
     name: "Garage Door"
     id: garage_door_cover
     device_class: garage
-    
+    on_open:
+      - logger.log: "Cover is Open!"
+    on_closed:
+      - logger.log: "Cover is Closed!"
+
     # Define the open/close actions
     open_action:
       - if:
@@ -155,25 +197,43 @@ cover:
             binary_sensor.is_off: door_open_sensor
           then:
             - switch.turn_on: garage_door_buzzer
-            - delay: 2s
-            - switch.turn_off: garage_door_buzzer
+            - delay: 500ms
+            - switch.turn_on: garage_door_buzzer
+            - delay: 500ms
+            - switch.turn_on: garage_door_buzzer
+            - delay: 500ms
+            - switch.turn_on: garage_door_buzzer
+            - delay: 500ms
+            - switch.turn_on: garage_door_buzzer
+            - delay: 500ms
             - switch.turn_on: garage_door_relay
             - script.execute: start_auto_close_timer
-    
+
     close_action:
       - if:
           condition:
             binary_sensor.is_off: door_closed_sensor
           then:
             - switch.turn_on: garage_door_buzzer
-            - delay: 2s
-            - switch.turn_off: garage_door_buzzer
+            - delay: 500ms
+            - switch.turn_on: garage_door_buzzer
+            - delay: 500ms
+            - switch.turn_on: garage_door_buzzer
+            - delay: 500ms
+            - switch.turn_on: garage_door_buzzer
+            - delay: 500ms
+            - switch.turn_on: garage_door_buzzer
+            - delay: 500ms
+            - switch.turn_on: garage_door_buzzer
+            - delay: 500ms
+            - switch.turn_on: garage_door_buzzer
+            - delay: 1s
             - switch.turn_on: garage_door_relay
             - script.execute: stop_auto_close_timer
-    
+
     stop_action:
       - switch.turn_on: garage_door_relay
-    
+
     # Determine current state based on reed switches
     lambda: |-
       if (id(door_open_sensor).state) {
@@ -181,9 +241,9 @@ cover:
       } else if (id(door_closed_sensor).state) {
         return COVER_CLOSED;
       } else {
-        return COVER_OPENING;
+        return COVER_OPERATION_OPENING;
       }
-    
+
     # Optimistic mode disabled since we have position feedback
     optimistic: false
 
@@ -210,7 +270,7 @@ script:
       # Wait for (timer - 30 seconds) before warning
       - delay:
           minutes: ${auto_close_timer_minutes}
-          seconds: -30
+          seconds: -1
       - if:
           condition:
             and:
@@ -218,18 +278,7 @@ script:
               - lambda: 'return id(auto_close_enabled);'
           then:
             # 30-second warning buzzer
-            - switch.turn_on: garage_door_buzzer
-            - delay: 500ms
-            - switch.turn_off: garage_door_buzzer
-            - delay: 500ms
-            - switch.turn_on: garage_door_buzzer
-            - delay: 500ms
-            - switch.turn_off: garage_door_buzzer
-            - delay: 500ms
-            - switch.turn_on: garage_door_buzzer
-            - delay: 500ms
-            - switch.turn_off: garage_door_buzzer
-            - delay: 27s  # Complete the remaining 30 seconds
+            - delay: 0s  # Complete the remaining 30 seconds
             - if:
                 condition:
                   and:
@@ -237,10 +286,11 @@ script:
                     - lambda: 'return id(auto_close_enabled);'
                 then:
                   # Auto-close the door
-                  - switch.turn_on: garage_door_buzzer
-                  - delay: 2s
-                  - switch.turn_off: garage_door_buzzer
-                  - switch.turn_on: garage_door_relay
+                  - cover.close: garage_door_cover
+                  # - switch.turn_on: garage_door_buzzer
+                  #- delay: 2s
+                  #- switch.turn_off: garage_door_buzzer
+                  # - switch.turn_on: garage_door_relay
       # Clear countdown when done
       - globals.set:
           id: countdown_seconds
@@ -311,3 +361,4 @@ sensor:
             return {};  // Return empty when countdown is 0 or negative
           }
           return x;
+
