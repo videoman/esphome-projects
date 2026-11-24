@@ -17,9 +17,9 @@ number:
     max_value: 60
     step: 1
     initial_value: $auto_close_timer_minutes
-    - globals.set:
-        id: my_global_number
-        value: !lambda 'return id(countdown).state;'
+      - globals.set:
+          id: my_global_number
+          value: !lambda 'return id(countdown).state;'
 
 # Countdown globals
 globals:
