@@ -1,0 +1,547 @@
+# GPIO Pin Definitions
+substitutions:
+  door_relay_pin: "GPIO16"
+  buzzer_relay_pin: "GPIO17"
+  door_open_sensor_pin: "GPIO4"
+  door_closed_sensor_pin: "GPIO5"
+  status_led_pin: "GPIO23"
+  auto_close_timer_minutes: "10"      # Default for the HA slider (first boot only)
+  auto_close_enabled_value: "true"    # Auto-close state applied at EVERY boot
+
+esphome:
+  name: garagedoorcontroller
+  friendly_name: GarageDoorController
+  on_boot:
+    priority: -100
+    then:
+      # Debug: shows what the reed switches read at boot
+      - logger.log:
+          format: "Boot sensors -> open: %s, closed: %s, cover pos: %.1f"
+          args:
+            - 'id(door_open_sensor).state ? "ON" : "OFF"'
+            - 'id(door_closed_sensor).state ? "ON" : "OFF"'
+            - 'id(garage_door_cover).position'
+      - if:
+          condition:
+            and:
+              - binary_sensor.is_on: door_open_sensor
+              - lambda: 'return id(auto_close_enabled);'
+          then:
+            - script.execute: start_auto_close_timer
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key1
+
+ota:
+  - platform: esphome
+    # Encrypted OTA using the same key as the API (inherited from
+    # api: encryption: key). Replaces the old OTA password.
+    encryption: {}
+
+wifi:
+  networks:
+  - ssid: !secret wifi_ssid
+    password: !secret wifi_password
+  - ssid: !secret 2_wifi_ssid
+    password: !secret 2_wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: !secret wifi_local_ssid
+    password: !secret wifi_local_password
+
+captive_portal:
+
+web_server:
+  port: 80
+  # Disable the web UI's /update firmware upload. It's plaintext and has no
+  # auth, so anyone on the LAN could flash this device. Use encrypted OTA
+  # (esphome run) instead. The captive portal still allows recovery uploads
+  # on the fallback AP.
+  ota: false
+  # Login for the web UI (and its REST/event endpoints). Digest auth
+  # doesn't send the password in cleartext like basic auth does.
+  auth:
+    type: digest
+    username: !secret web_username
+    password: !secret web_password
+
+# Auto-close state
+globals:
+  # Not restored: auto-close always comes back ON after a reboot or power
+  # loss, so the door is never left open without a timer. The HA switch
+  # still works normally until the next boot.
+  - id: auto_close_enabled
+    type: bool
+    restore_value: false
+    initial_value: $auto_close_enabled_value
+  - id: countdown_seconds
+    type: int
+    restore_value: false
+    initial_value: '0'
+  # True while the auto-close warning beeps are running (cover shows Closing)
+  - id: auto_close_warning_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+# Auto-close timeout, adjustable from Home Assistant
+number:
+  - platform: template
+    name: "Garage Door Auto-Close Minutes"
+    id: auto_close_minutes
+    icon: "mdi:timer-cog-outline"
+    optimistic: true
+    restore_value: true
+    initial_value: ${auto_close_timer_minutes}
+    min_value: 1
+    max_value: 30
+    step: 1
+    mode: slider
+    unit_of_measurement: "min"
+    entity_category: config
+
+binary_sensor:
+  # Reed switch for door open position
+  - platform: gpio
+    pin:
+      number: $door_open_sensor_pin
+      mode:
+        input: true
+        pullup: true
+      inverted: true
+    name: "Garage Door Open Sensor"
+    id: door_open_sensor
+    device_class: garage_door
+    entity_category: diagnostic
+    filters:
+      - delayed_on_off: 100ms
+    on_release:
+      - logger.log: "Open sensor -> OFF (door left fully-open position)"
+      # Door left the fully-open position - stop auto-close timer
+      - script.execute: stop_auto_close_timer
+      - cover.template.publish:
+          id: garage_door_cover
+          current_operation: CLOSING
+      - script.execute: travel_watchdog
+    on_press:
+      - logger.log: "Open sensor -> ON (door fully open)"
+      - script.stop: travel_watchdog
+      - cover.template.publish:
+          id: garage_door_cover
+          state: OPEN
+          current_operation: IDLE
+      # Door opened - start auto-close timer if enabled
+      - if:
+          condition:
+            lambda: 'return id(auto_close_enabled);'
+          then:
+            - script.execute: start_auto_close_timer
+
+  # Reed switch for door closed position
+  - platform: gpio
+    pin:
+      number: $door_closed_sensor_pin
+      mode:
+        input: true
+        pullup: true
+      # Contact closes when the magnet is present (same as the open switch):
+      # magnet -> pin pulled LOW -> inverted -> ON (door closed).
+      # A broken wire floats HIGH -> OFF, so a fault never reads as "closed".
+      inverted: true
+    name: "Garage Door Closed Sensor"
+    id: door_closed_sensor
+    # No device_class here: garage_door shows ON as "Open" in HA, and this
+    # sensor is ON when the door is CLOSED. Plain ON/OFF avoids the confusion.
+    icon: "mdi:garage-variant-lock"
+    entity_category: diagnostic
+    filters:
+      - delayed_on_off: 100ms
+    on_press:
+      - logger.log: "Closed sensor -> ON (door fully closed)"
+      - script.stop: travel_watchdog
+      - cover.template.publish:
+          id: garage_door_cover
+          state: CLOSED
+          current_operation: IDLE
+    on_release:
+      - logger.log: "Closed sensor -> OFF (door left fully-closed position)"
+      - cover.template.publish:
+          id: garage_door_cover
+          current_operation: OPENING
+      - script.execute: travel_watchdog
+
+switch:
+  # Main garage door relay (momentary)
+  - platform: gpio
+    pin: $door_relay_pin
+    name: "Garage Door Relay"
+    id: garage_door_relay
+    icon: "mdi:garage"
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - delay: 500ms
+      - switch.turn_off: garage_door_relay
+
+  # Buzzer relay (momentary - short pulse so back-to-back beeps don't collide)
+  - platform: gpio
+    pin: $buzzer_relay_pin
+    name: "Garage Door Buzzer"
+    id: garage_door_buzzer
+    icon: "mdi:bell-ring"
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - delay: 300ms
+      - switch.turn_off: garage_door_buzzer
+
+  # Auto-close enable/disable switch
+  - platform: template
+    name: "Garage Door Auto-Close"
+    id: auto_close_switch
+    icon: "mdi:timer-outline"
+    # IMPORTANT: template switches default to ALWAYS_OFF, which runs
+    # turn_off_action at boot and forces auto_close_enabled to false.
+    # DISABLED leaves the boot state to the auto_close_enabled global.
+    restore_mode: DISABLED
+    lambda: |-
+      return id(auto_close_enabled);
+    turn_on_action:
+      - globals.set:
+          id: auto_close_enabled
+          value: 'true'
+      - if:
+          condition:
+            binary_sensor.is_on: door_open_sensor
+          then:
+            - script.execute: start_auto_close_timer
+    turn_off_action:
+      # FIX: was $auto_close_enabled_value ("true"), which re-enabled auto-close
+      - globals.set:
+          id: auto_close_enabled
+          value: 'false'
+      - script.execute: stop_auto_close_timer
+
+# Template cover for garage door
+cover:
+  - platform: template
+    name: "Garage Door"
+    id: garage_door_cover
+    device_class: garage
+    on_opened:
+      - logger.log: "Cover is Open!"
+      - component.update: door_state_text
+    on_closed:
+      - logger.log: "Cover is Closed!"
+      - component.update: door_state_text
+    on_opening:
+      - logger.log: "Cover is Opening"
+      - component.update: door_state_text
+    on_closing:
+      - logger.log: "Cover is Closing"
+      - component.update: door_state_text
+    on_idle:
+      - component.update: door_state_text
+
+    # Manual open from HA: 5 warning beeps, then pulse the relay
+    # Runs unless the door is already fully open. If the closed sensor reads
+    # ON, opening is still allowed, so a stuck open sensor can't block it.
+    open_action:
+      - logger.log:
+          format: "Open requested: open_sensor=%s closed_sensor=%s"
+          args:
+            - 'id(door_open_sensor).state ? "ON" : "OFF"'
+            - 'id(door_closed_sensor).state ? "ON" : "OFF"'
+      - if:
+          condition:
+            or:
+              - binary_sensor.is_off: door_open_sensor
+              - binary_sensor.is_on: door_closed_sensor
+          then:
+            - repeat:
+                count: 5
+                then:
+                  - switch.turn_on: garage_door_buzzer
+                  - delay: 600ms
+            - switch.turn_on: garage_door_relay
+          else:
+            - logger.log:
+                level: WARN
+                format: "Open ignored: door already reads fully open"
+            # Clears a "Closing" left by a close command this one interrupted
+            - cover.template.publish:
+                id: garage_door_cover
+                current_operation: IDLE
+
+    # Manual close from HA: 7 beeps, pause, 3 beeps, then pulse the relay.
+    # Runs unless the door is already fully closed. If the open sensor reads
+    # ON, closing is still allowed, so a stuck closed sensor can't block it.
+    close_action:
+      - logger.log:
+          format: "Close requested: open_sensor=%s closed_sensor=%s"
+          args:
+            - 'id(door_open_sensor).state ? "ON" : "OFF"'
+            - 'id(door_closed_sensor).state ? "ON" : "OFF"'
+      - if:
+          condition:
+            or:
+              - binary_sensor.is_off: door_closed_sensor
+              - binary_sensor.is_on: door_open_sensor
+          else:
+            - logger.log:
+                level: WARN
+                format: "Close ignored: door already reads fully closed"
+          then:
+            # Cancel any pending auto-close so it can't fire mid-manual-close
+            - script.execute: stop_auto_close_timer
+            # Show "Closing" right away, during the warning beeps
+            - cover.template.publish:
+                id: garage_door_cover
+                current_operation: CLOSING
+            - script.stop: travel_watchdog
+            - repeat:
+                count: 7
+                then:
+                  - switch.turn_on: garage_door_buzzer
+                  - delay: 600ms
+            - delay: 1500ms
+            - repeat:
+                count: 3
+                then:
+                  - switch.turn_on: garage_door_buzzer
+                  - delay: 600ms
+            - switch.turn_on: garage_door_relay
+            # Reset "Closing" if the door never leaves the open sensor
+            - script.execute: travel_watchdog
+
+    # Pressing Stop also cancels a close that's still in its warning beeps
+    # (ESPHome stops the running close_action). The relay is only pulsed if
+    # the door is actually between the switches. At fully open/closed a pulse
+    # would START the door moving instead of stopping it.
+    stop_action:
+      - logger.log: "Stop requested"
+      - if:
+          condition:
+            and:
+              - binary_sensor.is_off: door_open_sensor
+              - binary_sensor.is_off: door_closed_sensor
+          then:
+            - switch.turn_on: garage_door_relay
+          else:
+            - logger.log: "Stop: door is at a limit switch - not pulsing relay"
+      - script.stop: travel_watchdog
+      - cover.template.publish:
+          id: garage_door_cover
+          current_operation: IDLE
+
+    # Determine current state based on reed switches.
+    # Returns {} (no change) when mid-travel, or when both sensors read ON
+    # (impossible - indicates a wiring/sensor fault, logged once).
+    lambda: |-
+      static bool fault_logged = false;
+      bool o = id(door_open_sensor).state;
+      bool c = id(door_closed_sensor).state;
+      if (o && c) {
+        if (!fault_logged) {
+          ESP_LOGW("garage", "Both reed switches read ON - check closed/open sensor wiring and 'inverted' settings");
+          fault_logged = true;
+        }
+        return {};
+      }
+      fault_logged = false;
+      if (o) return COVER_OPEN;
+      if (c) return COVER_CLOSED;
+      return {};
+
+    # Optimistic mode disabled since we have position feedback
+    optimistic: false
+
+# Auto-close timer scripts
+script:
+  - id: start_auto_close_timer
+    then:
+      - if:
+          condition:
+            lambda: 'return id(auto_close_enabled);'
+          then:
+            # Stop any existing timer first, then restart
+            - script.stop: auto_close_countdown
+            - script.stop: countdown_updater
+            - script.execute: auto_close_countdown
+            - script.execute: countdown_updater
+
+  # Owns the whole auto-close sequence (wait, warning, relay) so that
+  # script.stop cancels it at ANY point, including during the beeps.
+  - id: auto_close_countdown
+    then:
+      - globals.set:
+          id: countdown_seconds
+          value: !lambda 'return (int) id(auto_close_minutes).state * 60;'
+      - delay: !lambda 'return (uint32_t) id(auto_close_minutes).state * 60 * 1000;'
+      - if:
+          condition:
+            and:
+              - binary_sensor.is_on: door_open_sensor
+              - lambda: 'return id(auto_close_enabled);'
+          then:
+            - logger.log: "Auto-close: warning"
+            - globals.set:
+                id: auto_close_warning_active
+                value: 'true'
+            - cover.template.publish:
+                id: garage_door_cover
+                current_operation: CLOSING
+            - repeat:
+                count: 7
+                then:
+                  - switch.turn_on: garage_door_buzzer
+                  - delay: 600ms
+            - delay: 1500ms
+            - repeat:
+                count: 3
+                then:
+                  - switch.turn_on: garage_door_buzzer
+                  - delay: 600ms
+            # Last chance to abort - re-check right before firing the relay
+            - if:
+                condition:
+                  and:
+                    - binary_sensor.is_on: door_open_sensor
+                    - lambda: 'return id(auto_close_enabled);'
+                then:
+                  - logger.log: "Auto-close: closing door"
+                  - switch.turn_on: garage_door_relay
+                  - script.execute: travel_watchdog
+                else:
+                  - cover.template.publish:
+                      id: garage_door_cover
+                      current_operation: IDLE
+            - globals.set:
+                id: auto_close_warning_active
+                value: 'false'
+      # Clear countdown when done
+      - globals.set:
+          id: countdown_seconds
+          value: '0'
+
+  - id: countdown_updater
+    then:
+      - while:
+          condition:
+            lambda: 'return id(countdown_seconds) > 0;'
+          then:
+            - delay: 1s
+            - globals.set:
+                id: countdown_seconds
+                value: !lambda 'return id(countdown_seconds) - 1;'
+
+  # Resets a stuck OPENING/CLOSING state if no reed switch changes within
+  # 30s: the door stopped between the switches (wall-button stop, safety
+  # reverse), or never moved after the relay pulsed. Otherwise HA greys out
+  # the button for that direction. Restarted on every sensor release,
+  # stopped when a sensor is reached.
+  - id: travel_watchdog
+    mode: restart
+    then:
+      - delay: 30s
+      - if:
+          condition:
+            lambda: 'return id(garage_door_cover).current_operation != COVER_OPERATION_IDLE;'
+          then:
+            - logger.log:
+                level: WARN
+                format: "No reed switch change for 30s - setting operation to IDLE"
+            - cover.template.publish:
+                id: garage_door_cover
+                current_operation: IDLE
+
+  - id: stop_auto_close_timer
+    then:
+      - script.stop: auto_close_countdown
+      - script.stop: countdown_updater
+      - globals.set:
+          id: countdown_seconds
+          value: '0'
+      # If auto-close was cancelled mid-warning, clear its "Closing"
+      - if:
+          condition:
+            lambda: 'return id(auto_close_warning_active);'
+          then:
+            - globals.set:
+                id: auto_close_warning_active
+                value: 'false'
+            - cover.template.publish:
+                id: garage_door_cover
+                current_operation: IDLE
+
+# Status LED (optional)
+status_led:
+  pin: $status_led_pin
+
+text_sensor:
+  # Full door state, including movement. The ESP web UI only shows the cover
+  # as OPEN/CLOSED, so this is the one to watch there. Updated by the
+  # cover's state triggers, not polled.
+  - platform: template
+    name: "Garage Door State"
+    id: door_state_text
+    icon: "mdi:garage-alert"
+    update_interval: never
+    lambda: |-
+      auto op = id(garage_door_cover).current_operation;
+      if (op == COVER_OPERATION_OPENING) return {"Opening"};
+      if (op == COVER_OPERATION_CLOSING) return {"Closing"};
+      bool o = id(door_open_sensor).state;
+      bool c = id(door_closed_sensor).state;
+      if (o && c) return {"Sensor fault"};
+      if (o) return {"Open"};
+      if (c) return {"Closed"};
+      return {"Stopped"};
+
+  # Formatted countdown display (minutes:seconds)
+  - platform: template
+    name: "Garage Door Countdown Display"
+    id: countdown_display
+    icon: "mdi:clock-outline"
+    lambda: |-
+      int total_seconds = id(countdown_seconds);
+      if (total_seconds <= 0) {
+        return {"--:--"};
+      }
+      char buffer[12];
+      snprintf(buffer, sizeof(buffer), "%d:%02d", total_seconds / 60, total_seconds % 60);
+      return {buffer};
+    update_interval: 1s
+
+# Sensors for diagnostics and countdown
+sensor:
+  - platform: wifi_signal
+    name: "Garage Door WiFi Signal"
+    update_interval: 60s
+
+  - platform: uptime
+    name: "Garage Door Uptime"
+
+  # Auto-close countdown timer
+  - platform: template
+    name: "Garage Door Auto-Close Countdown"
+    id: auto_close_countdown_sensor
+    icon: "mdi:timer-outline"
+    unit_of_measurement: "s"
+    lambda: 'return id(countdown_seconds);'
+    update_interval: 1s
+    filters:
+      - lambda: |-
+          if (x <= 0) {
+            return {};  // Return empty when countdown is 0 or negative
+          }
+          return x;
