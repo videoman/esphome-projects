@@ -7,6 +7,8 @@ ESP32-based garage door controller for Home Assistant. It uses two reed switches
 - **Config file:** `garagedoorcontroller.yaml`
 - **Validated against:** ESPHome 2026.11.0
 
+![ESP32 Relay x2](https://devices.esphome.io/_astro/image.DL43SDqD_1p5qAK.webp)
+
 ---
 
 ## Features
