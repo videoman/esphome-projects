@@ -3,7 +3,7 @@
 ESP32-based garage door controller for Home Assistant. It uses two reed switches for position feedback, a relay to trigger the opener, a buzzer relay for audible warnings, and an auto-close timer you can adjust and turn on or off from Home Assistant.
 
 - **Device name:** `garagedoorcontroller`
-- **Board:** `esp32dev` (ESP-IDF framework)
+- **Board:** ESP32 Relay x2, a 2-channel relay board built on an ESP32-WROOM-32E (`esp32dev`, ESP-IDF framework). See [Hardware](#hardware)
 - **Config file:** `garagedoorcontroller.yaml`
 - **Validated against:** ESPHome 2026.11.0
 
@@ -19,12 +19,62 @@ ESP32-based garage door controller for Home Assistant. It uses two reed switches
   - Timeout adjustable from 1 to 30 minutes with a slider in HA (survives reboots)
   - Shows a live countdown, both in seconds and as `M:SS` text
   - Can be cancelled at any point, including during the warning beeps
-- Built-in web server on port 80, fallback hotspot (AP) with captive portal, OTA updates
+- Built-in web interface on port 80, **protected by a username and password** (digest auth)
+- **Encrypted OTA updates.** Firmware upload from the web UI is disabled
+- Fallback hotspot (AP) with captive portal
 - WiFi signal and uptime diagnostics
 
 ---
 
 ## Hardware
+
+### Board: ESP32 Relay x2 (ESP32-WROOM-32E, 2-channel)
+
+- **Amazon listing:** https://a.co/d/0dR3Fgg7 (ASIN `B0B8J9SNB5`)
+- **ESPHome device page:** https://devices.esphome.io/devices/ESP32-Relay-x2/
+- **Also sold as:** a generic "ESP32 2-channel relay module" on eBay and AliExpress, from many sellers
+
+> The specs below come from the ESPHome device database entry for this board. The relay and LED pins in this config (GPIO16, GPIO17, GPIO23) match it exactly. Clone boards vary, so check the silkscreen and relay labels on your own unit.
+
+| Spec | Value |
+|---|---|
+| MCU module | ESP32-WROOM-32E (`board: esp32dev`) |
+| Relays | 2 relays, each with **COM / NO / NC** screw terminals |
+| Relay rating | 10 A max load per relay (check the rating printed on the relay) |
+| Power input | **7–30 VDC** or **5 VDC**, on separate terminals |
+| USB-serial | None on board. Program through the 6-pin header with an external adapter (the ESPHome page names a CP2102N) |
+| Programming header | 6-pin. **Not** an FTDI-compatible pinout, so check the silkscreen before connecting |
+| GPIO breakout | Headers for every ESP32 GPIO, labeled on the back of the board |
+| Onboard button | GPIO0 (boot / programming) |
+| Onboard LED | GPIO23 |
+
+#### Board pin functions
+
+| GPIO | Board function | Used in this config as |
+|---|---|---|
+| GPIO16 | Relay 1 (outermost) | **Door opener relay** |
+| GPIO17 | Relay 2 | **Buzzer relay** |
+| GPIO23 | Onboard LED | `status_led` |
+| GPIO0 | Onboard button | Not used. Keep it free for flashing |
+| GPIO4 | Free header pin | Open reed switch |
+| GPIO5 | Free header pin (strapping pin) | Closed reed switch |
+
+#### Relay wiring for this project
+
+- **Relay 1 (opener):** wire **COM** and **NO** in parallel with the opener's wall-button terminals. Pulsing the relay is then the same as pressing the button. Leave NC unconnected.
+- **Relay 2 (buzzer):** wire the buzzer's supply through **COM** and **NO**, so the buzzer only sounds while the relay is pulsed.
+- **Reed switches:** connect each one between its GPIO header pin and a **GND** header pin. No external resistors are needed, because the config enables the internal pullups.
+
+#### Power
+
+Use one input only: either 7–30 VDC on the wide-range terminal, or a regulated 5 VDC on the 5 V terminal. Don't connect both.
+
+#### Flashing (first install)
+
+1. Connect a 3.3 V USB-serial adapter to the 6-pin header: TX→RX, RX→TX, GND→GND. Match the silkscreen, because the pin order isn't FTDI-standard.
+2. Hold the **GPIO0** button while the board powers up or resets, to enter the bootloader.
+3. Flash with `esphome run garagedoorcontroller.yaml --device /dev/ttyUSB0`, or with ESPHome Web.
+4. After that, update over encrypted OTA (see Build & Flash).
 
 ### Pin assignments
 
@@ -83,6 +133,64 @@ Generate an API key with:
 ```bash
 openssl rand -base64 32
 ```
+
+| Secret | Used for |
+|---|---|
+| `api_key1` | Home Assistant API encryption **and** OTA encryption (`ota: encryption: {}` inherits it) |
+| `wifi_ssid` / `wifi_password` | Primary Wi-Fi network |
+| `2_wifi_ssid` / `2_wifi_password` | Secondary Wi-Fi network |
+| `wifi_local_ssid` / `wifi_local_password` | Fallback hotspot the device creates if it can't connect to Wi-Fi |
+| `web_username` / `web_password` | Login for the local web interface |
+
+> `ota_pass1` is no longer used and can be deleted from `secrets.yaml`.
+
+---
+
+## Web Interface & Security
+
+### Logging in
+
+Browse to `http://garagedoorcontroller.local/`, or to the device's IP address. The browser asks for a username and password:
+
+- **Username:** the `web_username` value in `secrets.yaml`
+- **Password:** the `web_password` value in `secrets.yaml`
+
+The credentials are compiled into the firmware. **They are not stored in this README**, so keep them in `secrets.yaml` or a password manager.
+
+### Configuration
+
+```yaml
+web_server:
+  port: 80
+  ota: false            # no firmware upload from the web UI
+  auth:
+    type: digest        # password is never sent in cleartext
+    username: !secret web_username
+    password: !secret web_password
+```
+
+### Changing the username or password
+
+1. Edit `web_username` and `web_password` in `secrets.yaml`.
+2. Rebuild and flash over OTA: `esphome run garagedoorcontroller.yaml`.
+3. Close every browser window that had the old login open. Browsers cache digest credentials until they're closed, and there's no logout button.
+
+### What the login protects
+
+| Access path | Protection |
+|---|---|
+| Web UI and its REST/event endpoints (port 80) | **Username and password** (digest auth) |
+| Web UI firmware upload (`/update`) | **Disabled** (`ota: false`) |
+| Home Assistant native API | **Encrypted** with `api_key1`. Doesn't use the web login |
+| OTA updates (`esphome run`) | **Encrypted** with `api_key1` |
+| Fallback hotspot / captive portal | Only the AP's Wi-Fi password (`wifi_local_password`) |
+
+### Limitations
+
+- **Plain HTTP:** digest auth protects the password, but the pages and commands themselves aren't encrypted. Someone sniffing the same network can see the pages, door states and commands, but they can't recover the password from that traffic.
+- **No lockout or rate limiting:** the ESP doesn't block repeated failed logins. Use a strong, unique password.
+- **Captive portal:** if the device can't reach Wi-Fi, it starts its fallback AP. Anyone who knows `wifi_local_password` can join that AP and use the captive portal to change the Wi-Fi settings or upload firmware. Make `wifi_local_password` strong too.
+- **Best practice:** put the device on an isolated IoT VLAN, and only allow Home Assistant (and your admin host) to reach ports 80 and 6053.
 
 ---
 
@@ -231,13 +339,15 @@ The device also serves a local web UI at `http://garagedoorcontroller.local/`. I
 6. **Full auto-close:** with Minutes at 1, let it run all the way. You should hear the beeps, then the door closes and the countdown clears.
 7. **Manual close:** cover → Close while a countdown is running. The countdown should clear right away, then the close beeps play and the relay pulses.
 8. **Reboot behavior:** change the Minutes slider and turn Auto-Close **off**, then power-cycle the device. Minutes should keep its value and Auto-Close should come back **on**. If the door is open, the countdown should start on boot.
+9. **Web login:** open `http://garagedoorcontroller.local/` in a private browser window. It should ask for a login. A wrong password should be rejected, and `web_username` / `web_password` should get you in.
+10. **Web OTA disabled:** browse to `http://garagedoorcontroller.local/update`. It shouldn't offer a firmware upload.
 
 ---
 
 ## Known Issues / Notes
 
 - **GPIO5 is an ESP32 strapping pin.** A pullup is its normal boot state, but if the door is closed (pin pulled low) while the ESP32 boots, startup can act strangely. If you see boot problems, move the closed sensor to GPIO18, 19, 21 or 22.
-- **Web UI auth is HTTP only:** the web UI requires a login (digest auth). Digest auth keeps the password out of cleartext, but the session itself isn't encrypted, so for defense in depth keep the device on an isolated IoT VLAN. Firmware upload from the web UI is disabled (`ota: false`).
+- **Web UI security:** the web UI requires a login, but it runs over plain HTTP. See [Web Interface & Security](#web-interface--security).
 - **OTA encryption:** OTA uploads are encrypted with the API key (`ota: encryption: {}` inherits `api_key1`). There's no OTA password anymore. If an OTA upload ever fails with *"device did not offer encryption"*, the running firmware is too old to encrypt. Flash once over USB to fix it.
 - **Flash wear:** the Minutes slider is saved to flash. That's normal for occasional changes, but avoid automating them on a tight loop.
 - **Single trigger relay:** the opener relay works like the wall button. If an obstruction or a missed pulse puts the opener out of step, the reed switches will still report the real door state.
@@ -245,6 +355,14 @@ The device also serves a local web UI at `http://garagedoorcontroller.local/`. I
 ---
 
 ## Changelog
+
+### Rev 12
+
+- **Docs:** added a **Web Interface & Security** section covering the login, how to change the credentials, what each access path is protected by, and the limitations. Also added a table explaining each secret, and web-login tests to the checklist
+
+### Rev 11
+
+- **Docs:** added the board's details (ESP32 Relay x2): specs, pin functions, relay wiring, power and first-flash steps
 
 ### Rev 10
 
