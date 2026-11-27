@@ -123,7 +123,6 @@ binary_sensor:
     name: "Garage Door Open Sensor"
     id: door_open_sensor
     device_class: garage_door
-    entity_category: diagnostic
     filters:
       - delayed_on_off: 100ms
     on_release:
@@ -164,7 +163,6 @@ binary_sensor:
     # No device_class here: garage_door shows ON as "Open" in HA, and this
     # sensor is ON when the door is CLOSED. Plain ON/OFF avoids the confusion.
     icon: "mdi:garage-variant-lock"
-    entity_category: diagnostic
     filters:
       - delayed_on_off: 100ms
     on_press:
