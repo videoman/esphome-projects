@@ -7,8 +7,6 @@ ESP32-based garage door controller for Home Assistant. It uses two reed switches
 - **Config file:** `garagedoorcontroller.yaml`
 - **Validated against:** ESPHome 2026.11.0
 
-![ESP32 Relay x2](https://devices.esphome.io/_astro/image.DL43SDqD_1p5qAK.webp)
-
 ---
 
 ## Features
@@ -201,8 +199,8 @@ web_server:
 | Entity | Type | Description |
 |---|---|---|
 | Garage Door | `cover` (garage) | Open, close and stop, with state from the reed switches |
-| Garage Door Open Sensor | `binary_sensor` (garage_door, diagnostic) | Shows "Open" when the door is fully open |
-| Garage Door Closed Sensor | `binary_sensor` (diagnostic, no device class) | ON when the door is fully closed. It has no `garage_door` class, because that class would display ON as "Open" |
+| Garage Door Open Sensor | `binary_sensor` (garage_door) | `on` (shown as "Open") when the door is fully open. Can be used in automations |
+| Garage Door Closed Sensor | `binary_sensor` (no device class) | `on` when the door is fully closed, `off` as soon as it leaves the closed position. Can be used in automations. It has no `garage_door` class, because that class would display ON as "Open" |
 | Garage Door Relay | `switch` | Raw opener pulse (500ms). Doesn't beep or check state |
 | Garage Door Buzzer | `switch` | Raw buzzer pulse (300ms) |
 | Garage Door Auto-Close | `switch` | Turns auto-close on or off. Resets to **on** at every boot |
@@ -214,6 +212,56 @@ web_server:
 | Garage Door Uptime | `sensor` (s) | Device uptime |
 
 > **Tip:** Use the **Garage Door** cover for normal operation. The raw **Relay** switch skips the warning beeps and the state checks.
+
+### Using the reed sensors in automations
+
+Both reed sensors are regular (non-diagnostic) entities, so they show up in the automation editor's entity pickers and on auto-generated dashboards. They report changes immediately, after a 100ms debounce.
+
+| Sensor | `on` | `off` |
+|---|---|---|
+| Garage Door Open Sensor | Door fully open | Door not fully open |
+| Garage Door Closed Sensor | Door fully closed | Door not fully closed (opening, stopped partway, or open) |
+
+**Find the entity IDs:** in **Settings → Devices & services → ESPHome → GarageDoorController**, each sensor's entity ID is listed. They're usually `binary_sensor.garagedoorcontroller_garage_door_open_sensor` and `binary_sensor.garagedoorcontroller_garage_door_closed_sensor`, but check yours.
+
+#### Example: turn on the garage lights when the door starts to open
+
+```yaml
+alias: Garage lights on when door opens
+description: Turn on garage lights as soon as the door leaves the closed position
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.garagedoorcontroller_garage_door_closed_sensor
+    from: "on"      # only a real closed -> open transition
+    to: "off"
+actions:
+  - action: light.turn_on
+    target:
+      entity_id: light.garage_lights   # your light entity
+mode: single
+```
+
+> **Why `from: "on"`:** when the ESP reboots or reconnects, the sensor goes `unavailable` → `off` (if the door is open). Without `from: "on"`, that reconnect would also turn the lights on.
+
+#### Optional: turn the lights off a few minutes after the door closes
+
+```yaml
+alias: Garage lights off after door closes
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.garagedoorcontroller_garage_door_closed_sensor
+    from: "off"
+    to: "on"
+    for:
+      minutes: 5
+actions:
+  - action: light.turn_off
+    target:
+      entity_id: light.garage_lights
+mode: single
+```
+
+The `for: minutes: 5` only fires if the door stays closed for the full 5 minutes. If it reopens, the timer resets.
 
 ---
 
@@ -358,6 +406,11 @@ The device also serves a local web UI at `http://garagedoorcontroller.local/`. I
 
 ## Changelog
 
+### Rev 13
+
+- **Changed:** removed `entity_category: diagnostic` from both reed sensors, so they're first-class entities in Home Assistant (they show in entity pickers and default dashboards)
+- **Docs:** added "Using the reed sensors in automations", with example automations that turn the garage lights on when the door opens and off after it closes
+
 ### Rev 12
 
 - **Docs:** added a **Web Interface & Security** section covering the login, how to change the credentials, what each access path is protected by, and the limitations. Also added a table explaining each secret, and web-login tests to the checklist
@@ -411,7 +464,7 @@ The device also serves a local web UI at `http://garagedoorcontroller.local/`. I
 ### Rev 2
 
 - **Fixed:** the Closed Sensor had `device_class: garage_door`, so HA showed it as **"Open"** while the door was closed. The device class is removed, so it now shows plain ON/OFF
-- **Changed:** both reed sensors moved to the diagnostic category (the **Garage Door** cover is the main entity)
+- **Changed:** both reed sensors moved to the diagnostic category (the **Garage Door** cover is the main entity). Reverted in Rev 13
 - **Added:** a boot log line showing both reed switch states and the cover position
 - **Fixed:** replaced the deprecated `on_open` on the cover with `on_opened`
 - ~~Fixed: the closed-position reed switch is NC (`inverted: false`)~~ This was wrong. See Rev 4
